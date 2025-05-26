@@ -182,6 +182,13 @@ def load_text_embeddings(data_dir):
 
     return df_text_features.select(emb_columns + ['item', 'node', 'category'])
 
+def load_cat_df(data_dir):
+    cols = ["item", "category", "node"]
+    df_cat_features = pl.read_parquet(f'{data_dir}/cat_features.pq', low_memory=True).select(cols)
+
+    df_cat_features = reduce_memory_usage_pl(df_cat_features, name='df_cat_features')
+    return df_cat_features
+
 def get_text_embeddings_user(df_train: pl.DataFrame, df_text: pl.DataFrame) -> pl.DataFrame:
     """
     >> df_text = load_text_embeddings(data_dir)
@@ -232,10 +239,10 @@ def get_text_embeddings_node(df_train: pl.DataFrame, df_text: pl.DataFrame) -> p
     )
     return df_text_embeddings
 
-def get_node_features(df_train: pl.DataFrame, df_text: pl.DataFrame) -> pl.DataFrame:
-    assert 'node' in df_text.columns, 'node column does not exist in df_text'
+def get_node_features(df_train: pl.DataFrame, df_cat_text: pl.DataFrame) -> pl.DataFrame:
+    assert 'node' in df_cat_text.columns, 'node column does not exist in df_text'
     assert 'node' in df_train.columns, 'node column does not exist in df_train'
-    assert 'category' in df_text.columns, 'category column does not exist in df_text'
+    assert 'category' in df_cat_text.columns, 'category column does not exist in df_text'
 
     df_node = df_train.with_columns(
             pl.col("category").fill_null(40)
@@ -251,7 +258,7 @@ def get_node_features(df_train: pl.DataFrame, df_text: pl.DataFrame) -> pl.DataF
         
 
     df_category = (
-        df_text
+        df_cat_text
         .group_by(["node", "category"])
         .len()
         .rename({"len":"item_counts"})

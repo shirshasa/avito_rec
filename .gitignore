@@ -1,0 +1,7 @@
+/data
+/subs
+/.env
+/.idea
+/.ipynb_checkpoints
+/.vscode
+/.DS_Store

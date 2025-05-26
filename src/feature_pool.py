@@ -28,8 +28,9 @@ class FeaturePool:
 
 
     """
-    def __init__(self, key:str):
+    def __init__(self, key:str, catboost_mode=False):
         self.key = key
+        self.catboost_mode = catboost_mode
         self.features = {}
         self.embeddings = {}
         self.feature_types = {}
@@ -48,6 +49,9 @@ class FeaturePool:
         # add info about category and numerical features
         ratio_cols = self._get_ratio_columns(features)
         cat_cols = list(set(self._detect_categorical_columns(features)) - set(ratio_cols))
+
+        if self.catboost_mode:
+            cat_cols = cat_cols + [col for col in BIG_CATEGORIES if col in features.columns]
         
         num_cols = list((set(features.columns) - set(cat_cols)) - set(ratio_cols))
         num_cols.remove(self.key)
@@ -58,15 +62,15 @@ class FeaturePool:
             'ratios': ratio_cols
         }
 
-        print(f"""
-            Feature set {feature_set} added.\n
-            Columns:\n
-            - {len(cat_cols)} categorical features,\n
-            - {len(num_cols)} numerical features\n
-            - {len(ratio_cols)} ratio features.
-        """)
+        print(
+            f"""Feature set {feature_set} added.\n\
+            Columns:\n \
+            - {len(cat_cols)} categorical features,\n \
+            - {len(num_cols)} numerical features\n \
+            - {len(ratio_cols)} ratio features."""
+        )
 
-        print(len(ratio_cols) + len(cat_cols) + len(num_cols) + 1 == len(features.columns), "lens == total features")
+        print("Shape match:", len(ratio_cols) + len(cat_cols) + len(num_cols) + 1 == len(features.columns))
 
     def get_categorical_features_names(self):
         cat_features = []
@@ -181,7 +185,7 @@ class FeaturePool:
     
     def get_features(
             self, subset=None, add_categorical=True, add_numerical=True, add_ratios=True, add_embeddings=True,
-            filter_by_name=(),
+            filter_by_name=(), add_by_name=()
         ):
         """
         Get the features from the pool.
@@ -190,40 +194,37 @@ class FeaturePool:
         :param add_embeddings: Whether to add embedding features.
         :return: A DataFrame containing the features.
         """
+        def _check_column(col):
+            check = [pattern not in col for pattern in filter_by_name]
+            return all(check) or not filter_by_name
+        
+
         cols = [self.key]
+
         if add_ratios:
             for name, type2cols in self.feature_types.items():
-                if filter_by_name:
-                    cols_to_add = []
-                    for col in type2cols['ratios']:
-                        check = [pattern not in col for pattern in filter_by_name]
-                        if all(check):
-                            cols_to_add.append(col)
-
-                cols.extend(cols_to_add)
+                cur_cols = [col for col in type2cols['ratios'] if _check_column(col)]
+                cols.extend(cur_cols)
 
         if add_categorical:
             for name, type2cols in self.feature_types.items():
-                cols_to_add = []
-                for col in type2cols['categorical']:
-                    check = [pattern not in col for pattern in filter_by_name]
-                    if all(check):
-                        cols_to_add.append(col)
-                cols.extend(cols_to_add)
+                cur_cols = [col for col in type2cols['categorical'] if _check_column(col)]
+                cols.extend(cur_cols)
 
         if add_numerical:
             for name, type2cols in self.feature_types.items():
-                cols_to_add = []
-                for col in type2cols['ratios']:
-                    check = [pattern not in col for pattern in filter_by_name]
-                    if all(check):
-                        cols_to_add.append(col)
-                cols.extend(cols_to_add)
+                cur_cols = [col for col in type2cols['numerical'] if _check_column(col)]
+                cols.extend(cur_cols)
 
         dfs = []
         for name, features in self.features.items():
             if subset is None or name in subset:
                 cols_cur = [col for col in features.columns if col in cols]
+                if add_by_name:
+                    extra_cols = [col for col in add_by_name if col in features.columns]
+                    print(f"Warning: {extra_cols} in {name} features")
+                    cols_cur.extend(extra_cols)
+
                 dfs.append(features.select(cols_cur))
 
         if add_embeddings:
@@ -239,20 +240,19 @@ class FeaturePool:
 
     def get_melted_dataframe(
             self, subset=None, add_categorical=True, add_numerical=True, add_ratios=True, add_embeddings=True,
-            filter_by_name=(),
+            filter_by_name=(), add_by_name=()
         ):
 
         df = self.get_features(
             subset, add_categorical=add_categorical, add_numerical=add_numerical, add_embeddings=add_embeddings,
-            add_ratios=add_ratios, filter_by_name=filter_by_name
+            add_ratios=add_ratios, filter_by_name=filter_by_name, add_by_name=add_by_name
         )
-        feat_user_columns = df.columns.to_list()
-        df = pd.melt(df, id_vars=['id'], var_name='feature', value_vars=feat_user_columns)
+        feat_columns = df.columns
+        feat_columns.remove(self.key)
 
-        return df, feat_user_columns
-    
+        df = df.to_pandas()
+        df = df.rename(columns={self.key: 'id'})
+        df = pd.melt(df, id_vars=['id'], var_name='feature', value_vars=feat_columns)
 
-
-
-        
+        return df, feat_columns
 

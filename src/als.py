@@ -33,8 +33,8 @@ def get_als_weight_preds(
     interactions_df,
     user_features_df=None,
     item_features_df=None,
-    cat_user_features=None,
-    cat_item_features=None,
+    cat_user_features=(),
+    cat_item_features=(),
     eval_users = None,
     test_users=None,
     df_eval=None
