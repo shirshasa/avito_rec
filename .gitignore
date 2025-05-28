@@ -5,3 +5,6 @@
 /.ipynb_checkpoints
 /.vscode
 /.DS_Store
+/catboost_info
+/models
+*/__pycache__

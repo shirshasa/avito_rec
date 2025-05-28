@@ -67,8 +67,7 @@ class CandidatesGenerator:
             pl.col("cookie").cast(pl.Int64),
             pl.col("node").cast(pl.Int64)
         )
-        # self.state['test_preds'] = df_pred_pl
-        # self.state['test_preds@k'] = k
+
         return df_pred_pl
     
     def save_submit(self, path):

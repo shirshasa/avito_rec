@@ -183,7 +183,7 @@ def load_text_embeddings(data_dir):
     return df_text_features.select(emb_columns + ['item', 'node', 'category'])
 
 def load_cat_df(data_dir):
-    cols = ["item", "category", "node"]
+    cols = ["item", "category", "node", "location"]
     df_cat_features = pl.read_parquet(f'{data_dir}/cat_features.pq', low_memory=True).select(cols)
 
     df_cat_features = reduce_memory_usage_pl(df_cat_features, name='df_cat_features')
@@ -213,7 +213,7 @@ def get_text_embeddings_user(df_train: pl.DataFrame, df_text: pl.DataFrame) -> p
 
 def get_user_features(df_train: pl.DataFrame) -> pl.DataFrame:
     df_user = df_train.group_by("cookie").agg(
-        pl.col("node").mode().first().alias("most_freq_node"),
+        # pl.col("node").mode().first().alias("most_freq_node"),
         pl.col("location").mode().first().alias("most_freq_location"),
         pl.col("is_contact").sum().alias("total_contacts"),
         pl.col("is_contact").mean().alias("contact_ratio"),
@@ -232,10 +232,15 @@ def get_user_features(df_train: pl.DataFrame) -> pl.DataFrame:
 
     return df_user
 
-def get_text_embeddings_node(df_train: pl.DataFrame, df_text: pl.DataFrame) -> pl.DataFrame:        
+def load_text_embeddings_node(data_dir) -> pl.DataFrame:        
+    df_text = load_text_embeddings(data_dir)
     emb_columns = [c for c in df_text.columns if 'emb' in c]
     df_text_embeddings = df_text.group_by('node').agg(
         [pl.col(c).mean().round().cast(pl.Int8) for c in emb_columns]
+    )
+    df_text_embeddings = df_text_embeddings.select(
+        pl.col("node"),
+        pl.concat_list(emb_columns).alias("emb")
     )
     return df_text_embeddings
 
@@ -251,7 +256,7 @@ def get_node_features(df_train: pl.DataFrame, df_cat_text: pl.DataFrame) -> pl.D
             pl.col("is_contact").mean().alias("ctr"),
             pl.col("event").mode().first().alias("most_freq_event"),
             pl.col("surface").mode().first().alias("most_freq_surface"),
-            pl.col("location").mode().first().alias("most_freq_location"),
+            # pl.col("location").mode().first().alias("most_freq_location"),
             pl.col("event").len().alias("total_events"),
             pl.col("event").n_unique().alias("unique_events"),
         )
@@ -274,3 +279,140 @@ def get_node_features(df_train: pl.DataFrame, df_cat_text: pl.DataFrame) -> pl.D
     print(df_node.shape[0] == df_train['node'].n_unique())
 
     return df_node
+
+
+def get_user_cat_features(df: pl.DataFrame) -> pl.DataFrame:
+    keys = ['cookie', 'category']
+    df_user_cat = df.group_by(['cookie', 'category']).agg(
+        [
+            pl.col('is_contact').sum().alias('num_contacts'),
+            pl.col('is_contact').mean().alias('pr_contact'),
+            pl.col('surface').n_unique().alias('surface_unique_counts'),
+            pl.col('location').n_unique().alias('location_unique_counts'),
+        
+            pl.col('surface').mode().first().alias('most_freq_surface'),
+            pl.col('event').mode().first().alias('most_freq_event'),
+            pl.col('event').filter(pl.col('is_contact') == 1).mode().first().alias('most_freq_event_contact'),
+        
+            pl.col('node').filter(pl.col('is_contact') == 1).last().alias('node_last_contact'), # for emb
+            pl.col('node').filter(pl.col('is_contact') == 1).mode().first().alias('most_freq_node_contact'), # for emb
+            
+            pl.col('location_top').filter(pl.col('is_contact') == 1).last().alias('location_top_last_contact'),
+            pl.col('location_top').filter(pl.col('is_contact') == 1).mode().first().alias('most_freq_top_location_contact')
+        ]
+            )
+    df_user_cat.columns = [ x + "_CAT" if x not in keys else x for x in df_user_cat.columns]
+    return df_user_cat
+
+def get_user_loc_features(df: pl.DataFrame) -> pl.DataFrame:
+    keys = ['cookie', 'location']
+    df_user_loc = df.group_by(['cookie', 'location']).agg(
+        pl.col('is_contact').sum().alias('num_contacts'),
+        pl.col('is_contact').mean().alias('pr_contact'),
+        pl.col('surface').n_unique().alias('surface_unique_counts'),
+        pl.col('surface').mode().first().alias('most_freq_surface'),
+        pl.col('event').mode().first().alias('most_freq_event'),
+        pl.col('event').filter(pl.col('is_contact') == 1).mode().first().alias('most_freq_event_contact'),
+        
+        pl.col('node').filter(pl.col('is_contact') == 1).last().alias('node_last_contact'), # for emb
+        pl.col('node').filter(pl.col('is_contact') == 1).mode().first().alias('most_freq_node_contact'), # for emb
+    )
+    df_user_loc.columns = [ x + "_LOC" if x not in keys else x for x in df_user_loc.columns]
+    return df_user_loc
+
+def get_node_loc_cat_features(df_cat, top25_locations=None) -> pl.DataFrame:
+    df_node = df_cat.group_by('node').agg(
+        pl.col('category').first().alias("node_category"),
+        pl.col("location").unique().count().alias("node_location_num"),
+        pl.col("item").unique().count().alias("node_item_num"),
+        pl.col("location").mode().last().alias("node_most_freq_location")
+    )
+    if top25_locations:
+        df_node = df_node.with_columns(
+            pl.col("node_most_freq_location").is_in(top25_locations)
+        )
+    return df_node
+
+
+def join_features(preds, df_node, df_user_cat, df_user_loc):
+    ranker_preds = preds.join(
+        df_node, on='node', how='left'
+    )
+    ranker_preds = ranker_preds.join(
+        df_user_cat, left_on=['node_category', 'cookie'], right_on=['category', 'cookie'], how='left'
+    ).join(
+        df_user_loc, left_on=['node_most_freq_location', 'cookie'], right_on=['location', 'cookie'], how='left'
+    ).drop('node_most_freq_location')
+    
+    return ranker_preds
+
+
+def add_dist_similarity(preds, df_node_emb, nodes):
+    for c in nodes:
+        print("Adding cosine similarity for", c)
+
+        df = (
+        preds
+            .melt(id_vars="node", value_vars=c)
+            .drop_nulls()
+            .rename({"node":"idx"})
+        .join(
+            df_node_emb
+                .select(
+                    pl.col("node").alias("value"),
+                    pl.col("emb").alias("target_emb"),
+                ),
+            on="value",
+            how="left"
+        )
+        .join(
+            df_node_emb
+                .select(
+                    pl.col("node").alias("idx"),
+                    pl.col("emb").alias("source_emb"),
+                ),
+            on="idx",
+            how="left"
+        )
+    )
+
+        result = ( 
+            df.select('target_emb', 'source_emb')
+            .with_row_index()
+            .explode('target_emb', 'source_emb')
+            .group_by('index', maintain_order=True)
+            .agg(
+                pl.col('target_emb').dot('source_emb').alias('cosine_sim') / (
+                    ((pl.col('target_emb').cast(pl.Float32) * pl.col('target_emb').cast(pl.Float32)).sum()).sqrt().alias("n1")
+                        +
+                    ((pl.col('source_emb').cast(pl.Float32) * pl.col('source_emb').cast(pl.Float32)).sum()).sqrt().alias("n2")
+                )
+            )
+            .drop('index')
+        )
+        result = (
+            df
+            .hstack(result)
+            .unique(["idx", "value"])
+            .pivot(
+                index=["idx", "value"],
+                columns="variable",
+                values="cosine_sim",
+            )
+        ).rename(
+            {
+            "idx": "node",
+            "value": c,
+            c: "cosine_sim_" + c
+            }
+        )
+
+        preds = preds.join(
+            result,
+            on=['node', c],
+            how='left'
+        )
+
+
+    return preds
+

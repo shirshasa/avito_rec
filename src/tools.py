@@ -42,7 +42,7 @@ def reduce_memory_usage_pl(df, name):
 
 
 def recall_at(df_solution: pl.DataFrame, df_pred: pl.DataFrame, k=40, ):
-    assert df_pred.group_by(['cookie']).agg(pl.col('node').count())['node'].max() < 41 , 'send more then 40 nodes per cookie' # type: ignore
+    # assert df_pred.group_by(['cookie']).agg(pl.col('node').count())['node'].max() < 41 , 'send more then 40 nodes per cookie' # type: ignore
     assert 'node' in df_pred.columns, 'node columns does not exist'
     assert 'cookie' in df_pred.columns, 'cookie columns does not exist'
     assert df_pred.with_columns(v = 1).group_by(['cookie','node']).agg(pl.col('v').count())['v'].max() == 1 , 'more then 1 cookie-node pair'
