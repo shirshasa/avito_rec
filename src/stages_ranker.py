@@ -81,14 +81,14 @@ def get_hist_features(df_cand, df_cat):
     )
     item_params = dict(
         add_categorical=0, add_numerical=0, add_ratios=1, add_embeddings=0, 
-        filter_by_name=('surface', 'location', 'event')
+        filter_by_name=('surface', 'location',)
     )
     user_df = user_pool.get_features(**user_params) # type: ignore
     node_df = item_pool.get_features(**item_params) # type: ignore
     return user_df, node_df
 
 
-def load_ranker_preds(data_dir, data_path):
+def load_ranker_preds(data_dir, data_path, ranker_preds):
     if os.path.exists(data_path):
         print("Ranker predictions already exists, loading from", data_path)
         return pl.read_parquet(data_path)
@@ -109,16 +109,8 @@ def load_ranker_preds(data_dir, data_path):
     df_node_emb = load_text_embeddings_node(data_dir)
 
     # load prediction from generator
-
-    # ranker_preds1 = pl.read_parquet('./data/candidates/cand/preds_als_features_200.pq')
-    ranker_preds2 = pl.read_parquet('./data/candidates/cand/preds_als_no_feats_200.pq')
-    # ranker_preds3 = pl.read_parquet('./data/candidates/cand/preds_lightfm_300.pq')
-    # ranker_preds4 = pl.read_parquet('./data/candidates/cand/preds_knn_100.pq')
-
-    all_preds = ranker_preds2  # pl.concat([ranker_preds1, ranker_preds2, ranker_preds3, ranker_preds4], how='vertical')
-    all_preds = all_preds.unique(['cookie', 'node'])
-    all_preds = all_preds.sort(by=['cookie'])
-    ranker_preds = all_preds
+    ranker_preds = ranker_preds.unique(['cookie', 'node'])
+    ranker_preds = ranker_preds.sort(by=['cookie'])
 
     ranker_preds = prepare_data_for_ranking(
         predictions=ranker_preds, 
@@ -140,9 +132,17 @@ def load_ranker_preds(data_dir, data_path):
 def train_ranker():
     from consts import feats, cat
 
-    preprcoessed_data_path = './data/processed/ranker_preds_als_no_feat.pq'
+    PREPROC_FILE = './data/processed/ranker_preds_als_no_feat2.pq'
+    MODEL_DIR = './models/catboost_als_no_feats2'
 
-    ranker_preds = load_ranker_preds(data_dir = './data/', data_path=preprcoessed_data_path)
+    # ranker_preds1 = pl.read_parquet('./data/candidates/cand/preds_als_features_200.pq')
+    ranker_preds2 = pl.read_parquet('./data/candidates/cand/preds_als_no_feats_200.pq')
+    # ranker_preds3 = pl.read_parquet('./data/candidates/cand/preds_lightfm_300.pq')
+    # ranker_preds4 = pl.read_parquet('./data/candidates/cand/preds_knn_100.pq')
+
+    PREDS = ranker_preds2  # pl.concat([ranker_preds1, ranker_preds2, ranker_preds3, ranker_preds4], how='vertical')
+
+    ranker_preds = load_ranker_preds(data_dir = './data/', data_path=PREPROC_FILE, ranker_preds=PREDS)
 
     print("Ranker predictions shape", ranker_preds.shape)
     print("Start splitting data..")
@@ -157,7 +157,7 @@ def train_ranker():
         "max_ctr_complexity": 2,
         "nan_mode": "Min",
         "num_trees": 250,
-        "objective": "PairLogitPairwise:max_pairs=50",
+        "objective": "PairLogitPairwise",
         "random_state": 42,
         "task_type": "CPU",
         "thread_count": -1,
@@ -165,19 +165,20 @@ def train_ranker():
 
     model = cb.CatBoost(params = params)
     ranker.model = model
-    ranker.split_data(features=feats, cat_features=cat, eval_ratio=0.2)
+    ranker.split_data(features=feats, cat_features=cat, eval_ratio=0.1)
     ranker.fit()
     ranker.evaluate()
-    ranker.save('./models/catboost_als_no_feats')
+    ranker.save(MODEL_DIR)
     return ranker
 
 
 def evaluate_ranker():
     from consts import nodes
     # load ranker
-    ranker = SecondStageRanker.load('./models/catboost_lightfm')
-    cat = ranker.cat_features
+    MODEL = './models/catboost_als_no_feats2'
 
+    ranker = SecondStageRanker.load(MODEL)
+    cat = ranker.cat_features
     data_dir = './data/'
     df_train, df_eval, _ = get_train_val(data_dir = data_dir)
     df_ranker, df_cand = get_cand_ranker(df_train, cand_days=CAND_DAYS_TRESHOLD)
@@ -212,7 +213,6 @@ def evaluate_ranker():
             df_cand=df_train,
             df_cat=df_cat,
         )
-        
         eval_preds = ranker.predict_test(df=eval_preds, k=40)
         
         preds_users = eval_preds['cookie'].unique().to_list()
@@ -232,20 +232,24 @@ def evaluate_ranker():
     # knn_preds = './data/candidates/train/preds_knn_100.pq'
     # eval_preds3 = pl.read_parquet(knn_preds)
 
-    # all_preds = pl.concat([eval_preds1, eval_preds2, eval_preds3], how='vertical')
-    # all_preds = all_preds.unique(['cookie', 'node'])
-    # all_preds = all_preds.sort(by=['cookie'])
+    all_preds = pl.concat([eval_preds1,], how='vertical')
+    all_preds = all_preds.unique(['cookie', 'node'])
+    all_preds = all_preds.sort(by=['cookie'])
 
     # print("All predictions shape", all_preds.shape)
     # print(all_preds.head())
 
-    evaluate(eval_preds1)
+    evaluate(all_preds)
 
 
 def save_submission():
     from consts import nodes
     # load ranker
-    ranker = SecondStageRanker.load('./models/catboost_0_91_emb')
+    MODEL = './models/catboost_als_no_feats'
+    PREDS = './data/candidates/all/preds_lightfm_200.pq'
+    SUBMIT_FILE = './subs/submission4.csv'
+
+    ranker = SecondStageRanker.load(MODEL)
     cat = ranker.cat_features
 
     data_dir = './data/'
@@ -262,8 +266,7 @@ def save_submission():
 
     # nodes embeddings
     df_node_emb = load_text_embeddings_node(data_dir)
-    als_preds = './data/candidates/all/preds_als_features_200.pq'
-    eval_preds = pl.read_parquet(als_preds)
+    eval_preds = pl.read_parquet(PREDS)
 
     print("Submission predictions shape", eval_preds.shape)
     print("Users in submission predictions:", len(set(eval_users) - set(eval_preds['cookie'].unique())) == 0)
@@ -285,13 +288,100 @@ def save_submission():
             df=eval_preds,
             k=40
     )
-    eval_preds[['cookie', 'node']].write_csv('./subs/submission1.csv')
+    eval_preds[['cookie', 'node']].write_csv(SUBMIT_FILE)
 
+
+def load_ranker_preds_all(data_dir, data_path, ranker_preds):
+    if os.path.exists(data_path):
+        print("Ranker predictions already exists, loading from", data_path)
+        return pl.read_parquet(data_path)
     
+    from consts import nodes, cat
+
+    df_train, df_eval, _ = get_train_val(data_dir = data_dir)
+
+    df_event = pl.read_parquet(f'{data_dir}/events.pq')
+    df_eval = df_eval.join(df_event, on='event', how='left')
+    df_eval = df_eval.with_columns(pl.col("is_contact").alias("is_target"))
+
+    df_cat = load_cat_df(data_dir)
+    df_user_loc = get_user_loc_features(df_train)
+    df_user_cat = get_user_cat_features(df_train)
+    df_node = get_node_loc_cat_features(df_cat)
+
+    # nodes embeddings
+    df_node_emb = load_text_embeddings_node(data_dir)
+
+    # load prediction from generator
+    ranker_preds = ranker_preds.unique(['cookie', 'node'])
+    ranker_preds = ranker_preds.sort(by=['cookie'])
+
+    ranker_preds = prepare_data_for_ranking(
+        predictions=ranker_preds, 
+        df_node=df_node, 
+        df_user_cat=df_user_cat, 
+        df_user_loc=df_user_loc, 
+        df_node_emb=df_node_emb, 
+        cat=cat, 
+        nodes_cols=nodes,
+        df_ranker=df_eval,
+        df_cand=df_train,
+        df_cat=df_cat
+    )
+
+    ranker_preds.write_parquet(data_path)
+
+    return ranker_preds
+
+
+def train_ranker_on_all_data():
+    from consts import feats, cat
+
+    PREPROC_FILE = './data/processed/ALL.pq'
+    MODEL_DIR  = './models/catboost_als_no_feats2_all'
+
+    ranker_preds = pl.read_parquet('./data/candidates/train/preds_als_no_feats_200.pq')
+    # ranker_preds3 = pl.read_parquet('./data/candidates/cand/preds_lightfm_300.pq')
+    # ranker_preds4 = pl.read_parquet('./data/candidates/cand/preds_knn_100.pq')
+    PREDS = ranker_preds  # pl.concat([ranker_preds1, ranker_preds2, ranker_preds3, ranker_preds4], how='vertical')
+
+    ranker_preds = load_ranker_preds_all(data_dir = './data/', data_path=PREPROC_FILE, ranker_preds=PREDS)
+
+    print("Ranker predictions shape", ranker_preds.shape)
+    print("Start splitting data..")
+
+    ranker = SecondStageRanker(df=ranker_preds)
+    params = {
+        "boosting_type": "Plain",
+        "early_stopping_rounds": 10,
+        "eval_metric": "RecallAt:top=40",
+        # "learning_rate": 0.1,
+        "max_ctr_complexity": 2,
+        "nan_mode": "Min",
+        "num_trees": 100,
+        "objective": "PairLogitPairwise",
+        "random_state": 42,
+        "task_type": "CPU",
+        "thread_count": -1,
+    }
+
+    model = cb.CatBoost(params = params)
+    ranker.model = model
+    ranker.split_data(features=feats, cat_features=cat, eval_ratio=0.1)
+    ranker.fit()
+    ranker.evaluate()
+    ranker.save(MODEL_DIR)
+    return ranker
+
+
 
 if __name__ == "__main__":
-    train_ranker()
+    # train_ranker()
     # evaluate_ranker()
+    # save_submission()
+
+    # train_ranker_on_all_data()
+    save_submission()
     
     # Example of how to use the ranker
     # ranker = SecondStageRanker.load('./models/catboost_0_91_emb')
