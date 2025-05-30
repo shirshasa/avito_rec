@@ -85,7 +85,7 @@ class SecondStageRanker:
         stat = self.model.eval_metrics(
             self.test_pool, 
             metrics=["AUC", "Accuracy", "PrecisionAt:top=40", "RecallAt:top=40"], 
-            # ntree_start=self.model.tree_count_-1 # type: ignore
+            ntree_start=self.model.tree_count_-1 # type: ignore
         )
         for k in stat:
             print(f"{k}: {stat[k]}")

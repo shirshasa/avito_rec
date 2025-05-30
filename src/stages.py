@@ -308,7 +308,7 @@ if __name__ == "__main__":
     # train: 0.119
     # 1 stage candidates generation with ALS model on ranker data: preds_als_features_200.pq
     # cand: 0.08
-    # train: 0.16
+    # train: 0.16 -> 0.154
 
    
 
